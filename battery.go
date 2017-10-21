@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"strconv"
+	"time"
 
 	"github.com/godbus/dbus"
 
@@ -13,16 +15,25 @@ import (
 )
 
 type battery struct {
-	conf    *viper.Viper
-	batName string
-	out     chan string
+	conf           *viper.Viper
+	batName        string
+	out            chan string
+	acTickDuration time.Duration
+	acTimer        *time.Timer
 }
 
 // New returns new instance of battery plugin by given name
 func New(conf *viper.Viper) plugins.Plugin {
+	conf = setDefaults(conf)
+	tickDuration, err := time.ParseDuration(conf.GetString("animationTick"))
+	if err != nil {
+		log.Panic("Can't parse tick duration", err)
+	}
 	return battery{
-		out:  make(chan string, 1),
-		conf: setDefaults(conf),
+		out:            make(chan string, 1),
+		conf:           conf,
+		acTickDuration: tickDuration,
+		acTimer:        time.NewTimer(tickDuration),
 	}
 }
 
@@ -33,7 +44,8 @@ func (b battery) Chan() chan string {
 
 // StartMonitor starts monitoring for battery changing events
 func (b battery) StartMonitor() {
-	b.out <- b.formatMessage()
+	lvl, state := b.parseBatLevel()
+	b.out <- b.formatMessage(lvl, state)
 	conn, err := dbus.SystemBus()
 	if err != nil {
 		panic(fmt.Errorf("cannot connect dbus session: %s", err.Error()))
@@ -63,26 +75,36 @@ func (b battery) StartMonitor() {
 		select {
 		case <-c:
 		case <-resumeChan:
+		case <-b.acTimer.C:
 		}
 
-		b.out <- b.formatMessage()
+		lvl, state := b.parseBatLevel()
+		if state == 1 || state == 4 {
+			b.acTimer.Reset(b.acTickDuration)
+		}
+
+		b.out <- b.formatMessage(lvl, state)
 	}
 }
 
 // formatMessage formats message for printing
-func (b battery) formatMessage() string {
-	lvl, state := b.parseBatLevel()
-
-	var pattern string
+func (b battery) formatMessage(lvl int, state uint32) string {
+	var format, icon string
 	if state != 2 {
-		pattern = b.conf.GetString("ac")
+		format = b.conf.GetString("acFormat")
+		icon = b.getAnimationIcon()
 	} else {
-		format := b.conf.GetString("format")
-		format = utils.ReplaceVar(format, "icon", b.getIcon(lvl))
-		return utils.ReplaceVar(format, "lvl", strconv.Itoa(lvl))
+		format = b.conf.GetString("format")
+		icon = b.getIcon(lvl)
 	}
+	format = utils.ReplaceVar(format, "icon", icon)
+	return utils.ReplaceVar(format, "lvl", strconv.Itoa(lvl))
+}
 
-	return utils.ReplaceVar(pattern, "lvl", strconv.Itoa(lvl))
+func (b battery) getAnimationIcon() string {
+	iconSet := b.conf.Get("icons").([]interface{})
+	tickDuration, _ := time.ParseDuration(b.conf.GetString("animationTick"))
+	return iconSet[(time.Now().UnixNano()/tickDuration.Nanoseconds())%int64(len(iconSet))].(string)
 }
 
 func (b battery) getIcon(lvl int) string {
