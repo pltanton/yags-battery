@@ -77,19 +77,29 @@ func (b battery) formatMessage() string {
 	if state != 2 {
 		pattern = b.conf.GetString("ac")
 	} else {
-		switch {
-		case lvl > 75:
-			pattern = b.conf.GetString("high")
-		case lvl > 35:
-			pattern = b.conf.GetString("medium")
-		case lvl > 12:
-			pattern = b.conf.GetString("low")
-		default:
-			pattern = b.conf.GetString("empty")
-		}
+		format := b.conf.GetString("format")
+		format = utils.ReplaceVar(format, "icon", b.getIcon(lvl))
+		return utils.ReplaceVar(format, "lvl", strconv.Itoa(lvl))
 	}
 
 	return utils.ReplaceVar(pattern, "lvl", strconv.Itoa(lvl))
+}
+
+func (b battery) getIcon(lvl int) string {
+	iconSet := b.conf.Get("icons").([]interface{})
+	full := b.conf.GetInt("full")
+	if lvl >= full {
+		return iconSet[len(iconSet)-1].(string)
+	}
+
+	var delta float32
+	delta = (float32(full) / float32(len(iconSet)))
+	for i := 1; i <= len(iconSet); i++ {
+		if float32(lvl) < delta*float32(i) {
+			return iconSet[i-1].(string)
+		}
+	}
+	return ""
 }
 
 // parseBatLevel connects to the system bus and get the State and Percentage
